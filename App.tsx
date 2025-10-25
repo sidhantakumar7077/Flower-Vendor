@@ -13,7 +13,6 @@ import NoInternet from './src/screens/NoInternet/Index'
 
 // // Auth
 import Login from './src/screens/Auth/Login'
-// import Otp from './src/screens/Auth/OTP'
 
 // // Pages
 import Home from './src/screens/Home/Index'
@@ -72,8 +71,7 @@ const App = () => {
           <>
             {access_token ? <Stack.Screen name="Home" component={Home} /> : <Stack.Screen name="Login" component={Login} />}
             {!access_token ? <Stack.Screen name="Home" component={Home} /> : <Stack.Screen name="Login" component={Login} />}
-            {/* <Stack.Screen name="Otp" component={Otp} />
-            <Stack.Screen name="Profile" component={Profile} />
+            {/* <Stack.Screen name="Profile" component={Profile} />
             <Stack.Screen name="Pickup" component={Pickup} /> */}
           </>
         )}
