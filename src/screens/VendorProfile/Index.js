@@ -5,7 +5,6 @@ import {
     ScrollView, RefreshControl, Linking, Modal,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-// import Clipboard from "@react-native-clipboard/clipboard";
 import { base_url } from "../../../App";
 import { useNavigation, CommonActions } from "@react-navigation/native";
 
@@ -60,11 +59,6 @@ export default function VendorProfile() {
     const initials = (name = "") =>
         name.split(" ").map((s) => s[0]).join("").slice(0, 2).toUpperCase();
 
-    // const copy = (text) => {
-    //     Clipboard.setString(String(text || ""));
-    //     Alert.alert("Copied", "Vendor ID copied.");
-    // };
-
     const dial = (phone) => phone && Linking.openURL(`tel:${phone}`);
     const emailTo = (email) => email && Linking.openURL(`mailto:${email}`);
 
@@ -112,11 +106,6 @@ export default function VendorProfile() {
                                 <View style={styles.chip}><Text style={styles.chipTxt}>{profile?.vendor_category || "—"}</Text></View>
                                 <View style={styles.pill}><Text style={styles.pillTxt}>{profile?.status || "—"}</Text></View>
                             </View>
-                            {/* <Pressable onPress={() => copy(profile?.vendor_id)} style={styles.idRow}>
-                                <Text style={styles.idLabel}>Vendor ID</Text>
-                                <Text style={styles.idValue}>{profile?.vendor_id}</Text>
-                                <Text style={styles.copy}>⧉</Text>
-                            </Pressable> */}
                         </View>
                     </View>
 
