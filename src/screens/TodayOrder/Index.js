@@ -38,7 +38,7 @@ const COLORS = {
 };
 
 export default function TodayOrders() {
-    
+
     const navigation = useNavigation();
     const [loading, setLoading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
@@ -96,12 +96,18 @@ export default function TodayOrders() {
         [pickups]
     );
 
-    const formatDT = (iso) => (!iso ? "—" : new Date(iso).toLocaleString().replace(",", " ·"));
+    // const formatDT = (iso) => (!iso ? "—" : new Date(iso).toLocaleString().replace(",", " ·"));
+    const formatDT = (iso) => (!iso ? "—" : new Date(iso).toLocaleDateString());
     const formatCurrency = (n) =>
-        Number(n || 0).toLocaleString(undefined, { style: "currency", currency: "INR" });
+        Number(n || 0).toLocaleString(undefined, {
+            style: "currency",
+            currency: "INR",
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0,
+        });
 
     // submit using { price (per-unit), total_price } for each item
-    const submitPrices = async (pickup, localUnits) => {
+    const submitPrices = async (pickup, localUnits, discount = "") => {
         const access_token = await AsyncStorage.getItem("storeAccesstoken");
         try {
             setSubmitting(true);
@@ -113,17 +119,32 @@ export default function TodayOrders() {
                     localUnits[it.id] !== undefined && localUnits[it.id] !== ""
                         ? Number(localUnits[it.id])
                         : Number(it.price || 0);
-                const itemTotal = Number.isFinite(unit * qty) ? Number((unit * qty).toFixed(2)) : 0;
+
+                const raw = unit * qty;
+                const itemTotal = Number.isFinite(raw) ? Math.round(raw) : 0;
+
                 return {
                     id: it.id,
                     flower_id: it.flower_id,
                     price: Number.isFinite(unit) ? unit : 0,
-                    total_price: itemTotal,
+                    total_price: itemTotal, // integer
                 };
             });
 
             const total = payloadItems.reduce((s, it) => s + (Number(it.total_price) || 0), 0);
-            const body = { total_price: Number(total.toFixed(2)), flower_pickup_items: payloadItems };
+            // discount + grand total (rounded, non-decimal)
+            const dNum = parseFloat(discount || "0") || 0;
+            const discountRounded = Number.isFinite(dNum) ? Math.round(dNum) : 0;
+            const grandTotal = Math.max(0, total - discountRounded);
+
+            const body = {
+                total_price: total,
+                discount: discountRounded,
+                grand_total_price: grandTotal,
+                flower_pickup_items: payloadItems,
+            };
+            // console.log("Body", body);
+            // return;
 
             const res = await fetch(`${base_url}api/update-flower-prices/${pickup.pick_up_id}`, {
                 method: "POST",
@@ -170,14 +191,33 @@ export default function TodayOrders() {
                 localUnits[it.id] !== undefined && localUnits[it.id] !== ""
                     ? parseFloat(localUnits[it.id])
                     : parseFloat(it.price ?? "0") || 0;
+
             const tot = unit * qty;
-            return Number.isFinite(tot) ? tot : 0;
+            const rounded = Number.isFinite(tot) ? Math.round(tot) : 0;
+            return rounded;
         };
 
         const computeCardTotal = () => {
             const items = pickup.flower_pickup_items || [];
             return items.reduce((acc, it) => acc + computeItemTotal(it), 0);
         };
+
+        const [discount, setDiscount] = useState(() =>
+            pickup?.discount !== null && pickup?.discount !== undefined ? String(pickup.discount) : ""
+        );
+
+        // keep it in sync after fetchPickups() reloads the pickup from DB
+        useEffect(() => {
+            setDiscount(pickup?.discount !== null && pickup?.discount !== undefined ? String(pickup.discount) : "");
+        }, [pickup?.pick_up_id, pickup?.discount]);
+
+        const calculatedTotal = computeCardTotal();
+
+        const discountNum = parseFloat(discount || "0") || 0;
+        const discountRounded = Number.isFinite(discountNum) ? Math.round(discountNum) : 0;
+
+        const grandTotal = Math.max(0, calculatedTotal - discountRounded);
+
 
         return (
             <Animated.View
@@ -262,11 +302,36 @@ export default function TodayOrders() {
                     {/* footer total + action */}
                     <View style={styles.totalRow}>
                         <Text style={styles.totalLabel}>Calculated Total</Text>
-                        <Text style={styles.totalValue}>{formatCurrency(computeCardTotal())}</Text>
+                        <Text style={styles.totalValue}>{formatCurrency(calculatedTotal)}</Text>
+                    </View>
+
+                    {/* Discount row */}
+                    <View style={styles.discountRow}>
+                        <Text style={styles.totalLabel}>Discount</Text>
+
+                        <View style={[styles.inputWrap, { width: 160 }]}>
+                            <View style={styles.prefix}>
+                                <Text style={styles.prefixText}>₹</Text>
+                            </View>
+                            <TextInput
+                                style={styles.input}
+                                value={discount}
+                                placeholder="0"
+                                placeholderTextColor="#94A3B8"
+                                keyboardType="number-pad"
+                                onChangeText={setDiscount}
+                            />
+                        </View>
+                    </View>
+
+                    {/* Grand Total row */}
+                    <View style={styles.grandRow}>
+                        <Text style={styles.totalLabel}>Grand Total</Text>
+                        <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
                     </View>
 
                     <Pressable
-                        onPress={() => submitPrices(pickup, localUnits)}
+                        onPress={() => submitPrices(pickup, localUnits, discount)}
                         disabled={submitting}
                         style={({ pressed }) => [
                             styles.primaryBtn,
@@ -444,6 +509,22 @@ const styles = StyleSheet.create({
     },
     totalLabel: { color: COLORS.sub, fontWeight: "700" },
     totalValue: { color: COLORS.text, fontWeight: "900", fontSize: 18 },
+    discountRow: {
+        paddingTop: 10,
+        marginTop: 4,
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+    },
+    grandRow: {
+        borderTopWidth: 1,
+        borderTopColor: COLORS.border,
+        paddingTop: 12,
+        marginTop: 10,
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+    },
 
     primaryBtn: {
         marginTop: 12,
