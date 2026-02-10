@@ -1,5 +1,5 @@
 // TodayOrders.js
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -37,6 +37,300 @@ const COLORS = {
     mutedCard: "#F8FAFC",
 };
 
+const onlyDecimal = (s) => String(s ?? "").replace(/[^0-9.]/g, "");
+const onlyInt = (s) => String(s ?? "").replace(/[^0-9]/g, "");
+
+const toNum = (s) => {
+    const n = parseFloat(String(s ?? "").trim());
+    return Number.isFinite(n) ? n : 0;
+};
+
+const formatUnit = (n) => {
+    if (!Number.isFinite(n)) return "";
+    const s = n.toFixed(2);
+    return s.replace(/\.?0+$/, "");
+};
+
+const seedFromPickup = (pickup) => {
+    const units = {};
+    const totals = {};
+    (pickup?.flower_pickup_items || []).forEach((it) => {
+        const qty = toNum(it.quantity);
+        const unitStr = it.price !== null && it.price !== undefined ? String(it.price) : "";
+        const apiTotal =
+            it.total_price !== null && it.total_price !== undefined ? String(Math.round(toNum(it.total_price))) : "";
+
+        const derivedTotal =
+            unitStr !== "" ? String(Math.max(0, Math.round(toNum(unitStr) * qty))) : "";
+
+        units[it.id] = unitStr;
+        totals[it.id] = apiTotal !== "" ? apiTotal : derivedTotal;
+    });
+    return { units, totals };
+};
+
+const Meta = ({ label, value }) => (
+    <View style={styles.metaChip}>
+        <Text style={styles.metaLabel}>{label}</Text>
+        <Text style={styles.metaVal}>{value || "—"}</Text>
+    </View>
+);
+
+const Card = React.memo(function Card({
+    pickup,
+    index,
+    vendorData,
+    submitting,
+    formatDT,
+    formatCurrency,
+    submitPrices,
+    getDraft,
+    setDraft,
+}) {
+    const a = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        Animated.timing(a, {
+            toValue: 1,
+            duration: 260,
+            delay: index * 60,
+            useNativeDriver: true,
+        }).start();
+    }, [a, index]);
+
+    // ✅ keep edits LOCAL (no parent state updates on every keypress)
+    const [local, setLocal] = useState(() => getDraft(pickup.pick_up_id) || seedFromPickup(pickup));
+
+    // ✅ on fresh fetch, hydrate once (when pickup changes)
+    useEffect(() => {
+        const d = getDraft(pickup.pick_up_id);
+        setLocal(d || seedFromPickup(pickup));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pickup.pick_up_id]);
+
+    // ✅ silently persist to ref (no re-render)
+    const persistTimer = useRef(null);
+    const persist = useCallback(
+        (nextLocal) => {
+            if (persistTimer.current) clearTimeout(persistTimer.current);
+            persistTimer.current = setTimeout(() => {
+                setDraft(pickup.pick_up_id, nextLocal);
+            }, 120);
+        },
+        [pickup.pick_up_id, setDraft]
+    );
+
+    const qtyOf = (it) => toNum(it.quantity);
+
+    const calcTotalFromUnit = (it, unitStr) => {
+        const qty = qtyOf(it);
+        const unit = toNum(unitStr);
+        const t = unit * qty;
+        return Number.isFinite(t) ? String(Math.max(0, Math.round(t))) : "";
+    };
+
+    const calcUnitFromTotal = (it, totalStr) => {
+        const qty = qtyOf(it);
+        const total = toNum(totalStr);
+        if (qty <= 0) return "";
+        return formatUnit(total / qty);
+    };
+
+    const onChangeUnit = (it, txtRaw) => {
+        const txt = onlyDecimal(txtRaw);
+
+        setLocal((prev) => {
+            const nextTotal = txt === "" ? "" : calcTotalFromUnit(it, txt);
+            const next = {
+                units: { ...prev.units, [it.id]: txt },
+                totals: { ...prev.totals, [it.id]: nextTotal },
+            };
+            persist(next); // ✅ smooth (no parent rerender)
+            return next;
+        });
+    };
+
+    const onChangeTotal = (it, txtRaw) => {
+        const txt = onlyInt(txtRaw);
+
+        setLocal((prev) => {
+            const nextUnit = txt === "" ? "" : calcUnitFromTotal(it, txt);
+            const next = {
+                units: { ...prev.units, [it.id]: nextUnit },
+                totals: { ...prev.totals, [it.id]: txt },
+            };
+            persist(next);
+            return next;
+        });
+    };
+
+    const getItemTotalNumber = (it) => {
+        const tStr = local.totals[it.id];
+        if (tStr !== undefined && String(tStr).trim() !== "") return Math.max(0, Math.round(toNum(tStr)));
+
+        const uStr = local.units[it.id];
+        const qty = qtyOf(it);
+        const unit = uStr !== undefined && String(uStr).trim() !== "" ? toNum(uStr) : toNum(it.price);
+        return Math.max(0, Math.round(unit * qty));
+    };
+
+    const calculatedTotal = useMemo(() => {
+        const items = pickup.flower_pickup_items || [];
+        return items.reduce((acc, it) => acc + getItemTotalNumber(it), 0);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pickup.pick_up_id, local]);
+
+    const [discount, setDiscount] = useState(() =>
+        pickup?.discount !== null && pickup?.discount !== undefined ? String(pickup.discount) : ""
+    );
+
+    useEffect(() => {
+        setDiscount(pickup?.discount !== null && pickup?.discount !== undefined ? String(pickup.discount) : "");
+    }, [pickup?.pick_up_id, pickup?.discount]);
+
+    const discountRounded = Math.round(toNum(discount || "0"));
+    const grandTotal = Math.max(0, calculatedTotal - discountRounded);
+
+    return (
+        <Animated.View
+            style={{
+                opacity: a,
+                transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
+            }}
+        >
+            <View style={styles.card}>
+                {/* header */}
+                <View style={styles.headerRow}>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.vendorName}>{vendorData?.vendor_name || "—"}</Text>
+                        <Text style={styles.metaText}>
+                            Rider: <Text style={styles.metaStrong}>{pickup?.rider?.rider_name || "—"}</Text>
+                        </Text>
+                    </View>
+                    <View style={styles.statusPill}>
+                        <Text style={styles.statusText}>{pickup.status || "—"}</Text>
+                    </View>
+                </View>
+
+                {/* chips */}
+                <View style={styles.chipsRow}>
+                    <Meta label="Pickup" value={formatDT(pickup.pickup_date)} />
+                    <Meta label="Payment" value={pickup.payment_status || "—"} />
+                </View>
+
+                {/* items */}
+                <View style={styles.itemsWrap}>
+                    {(pickup.flower_pickup_items || []).map((it) => {
+                        const unitVal = local.units[it.id] ?? "";
+                        const totalVal = local.totals[it.id] ?? "";
+
+                        return (
+                            <View key={it.id} style={styles.itemCard}>
+                                {/* row 1 */}
+                                <View style={styles.itemTopRow}>
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={styles.itemName}>
+                                            {it?.flower?.item_name || it?.flower?.name || it.flower_id}
+                                        </Text>
+                                        <Text style={styles.itemMeta}>
+                                            Qty: {it.quantity} {it?.unit?.unit_name || ""}
+                                        </Text>
+                                    </View>
+                                    <Text style={styles.itemIdText}>#{it.flower_id}</Text>
+                                </View>
+
+                                {/* row 2: two perfectly aligned fields */}
+                                <View style={styles.fieldRow}>
+                                    <View style={styles.fieldCol}>
+                                        <Text style={styles.labelSmall}>Price / Unit (₹)</Text>
+                                        <View style={styles.inputWrap}>
+                                            <View style={styles.prefix}>
+                                                <Text style={styles.prefixText}>₹</Text>
+                                            </View>
+                                            <TextInput
+                                                style={styles.input}
+                                                value={unitVal}
+                                                placeholder="0.00"
+                                                placeholderTextColor="#94A3B8"
+                                                keyboardType="decimal-pad"
+                                                autoCorrect={false}
+                                                blurOnSubmit={false}
+                                                onChangeText={(t) => onChangeUnit(it, t)}
+                                                onBlur={() => setDraft(pickup.pick_up_id, local)}
+                                            />
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.fieldCol}>
+                                        <Text style={styles.labelSmall}>Item Total (₹)</Text>
+                                        <View style={styles.inputWrap}>
+                                            <View style={styles.prefix}>
+                                                <Text style={styles.prefixText}>₹</Text>
+                                            </View>
+                                            <TextInput
+                                                style={styles.input}
+                                                value={totalVal}
+                                                placeholder="0"
+                                                placeholderTextColor="#94A3B8"
+                                                keyboardType="number-pad"
+                                                autoCorrect={false}
+                                                blurOnSubmit={false}
+                                                onChangeText={(t) => onChangeTotal(it, t)}
+                                                onBlur={() => setDraft(pickup.pick_up_id, local)}
+                                            />
+                                        </View>
+                                    </View>
+                                </View>
+                            </View>
+                        );
+                    })}
+                </View>
+
+                {/* totals */}
+                <View style={styles.totalRow}>
+                    <Text style={styles.totalLabel}>Calculated Total</Text>
+                    <Text style={styles.totalValue}>{formatCurrency(calculatedTotal)}</Text>
+                </View>
+
+                <View style={styles.discountRow}>
+                    <Text style={styles.totalLabel}>Discount</Text>
+                    <View style={[styles.inputWrap, { width: 160 }]}>
+                        <View style={styles.prefix}>
+                            <Text style={styles.prefixText}>₹</Text>
+                        </View>
+                        <TextInput
+                            style={styles.input}
+                            value={discount}
+                            placeholder="0"
+                            placeholderTextColor="#94A3B8"
+                            keyboardType="number-pad"
+                            autoCorrect={false}
+                            onChangeText={(t) => setDiscount(onlyInt(t))}
+                        />
+                    </View>
+                </View>
+
+                <View style={styles.grandRow}>
+                    <Text style={styles.totalLabel}>Grand Total</Text>
+                    <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
+                </View>
+
+                <Pressable
+                    onPress={() => submitPrices(pickup, local.units, local.totals, discount)}
+                    disabled={submitting}
+                    style={({ pressed }) => [
+                        styles.primaryBtn,
+                        pressed && { transform: [{ scale: 0.995 }] },
+                        submitting && { opacity: 0.6 },
+                    ]}
+                >
+                    <Text style={styles.primaryBtnText}>{submitting ? "Submitting..." : "Update Flower Prices"}</Text>
+                </Pressable>
+            </View>
+        </Animated.View>
+    );
+});
+
 export default function TodayOrders() {
 
     const navigation = useNavigation();
@@ -46,33 +340,32 @@ export default function TodayOrders() {
     const [pickups, setPickups] = useState([]);
     const [vendorData, setVendorData] = useState(null);
 
-    // unit prices only; totals are derived
-    const [unitDrafts, setUnitDrafts] = useState({}); // { [pick_up_id]: { [itemId]: "unitPrice" } }
+    // ✅ store drafts in REF (no re-render on typing)
+    const draftsRef = useRef({}); // { [pick_up_id]: { units, totals } }
+
+    const getDraft = useCallback((pickUpId) => draftsRef.current?.[pickUpId] || null, []);
+    const setDraft = useCallback((pickUpId, local) => {
+        draftsRef.current[pickUpId] = local;
+    }, []);
 
     const fetchPickups = async () => {
         const access_token = await AsyncStorage.getItem("storeAccesstoken");
         try {
             setLoading(true);
             setError("");
+
             const res = await fetch(`${base_url}api/vendor-pickups`, {
                 headers: { Authorization: `Bearer ${access_token}`, "Content-Type": "application/json" },
             });
             if (!res.ok) throw new Error(`GET failed (${res.status})`);
             const json = await res.json();
+
             const list = Array.isArray(json?.data) ? json.data : [];
             setPickups(list);
             setVendorData(json?.vendor || null);
 
-            // seed drafts
-            const seeded = {};
-            list.forEach((p) => {
-                const m = {};
-                (p.flower_pickup_items || []).forEach((it) => {
-                    m[it.id] = it.price !== null && it.price !== undefined ? String(it.price) : "";
-                });
-                seeded[p.pick_up_id] = m;
-            });
-            setUnitDrafts(seeded);
+            // optional: clear drafts when fresh list comes (prevents old ref values)
+            // draftsRef.current = {};
         } catch (e) {
             setError(e.message || "Something went wrong.");
         } finally {
@@ -96,7 +389,6 @@ export default function TodayOrders() {
         [pickups]
     );
 
-    // const formatDT = (iso) => (!iso ? "—" : new Date(iso).toLocaleString().replace(",", " ·"));
     const formatDT = (iso) => (!iso ? "—" : new Date(iso).toLocaleDateString());
     const formatCurrency = (n) =>
         Number(n || 0).toLocaleString(undefined, {
@@ -106,35 +398,41 @@ export default function TodayOrders() {
             maximumFractionDigits: 0,
         });
 
-    // submit using { price (per-unit), total_price } for each item
-    const submitPrices = async (pickup, localUnits, discount = "") => {
+    const submitPrices = async (pickup, localUnits, localTotals, discount = "") => {
         const access_token = await AsyncStorage.getItem("storeAccesstoken");
         try {
             setSubmitting(true);
+
             const items = pickup.flower_pickup_items || [];
 
             const payloadItems = items.map((it) => {
-                const qty = parseFloat(it.quantity ?? "0") || 0;
-                const unit =
-                    localUnits[it.id] !== undefined && localUnits[it.id] !== ""
-                        ? Number(localUnits[it.id])
-                        : Number(it.price || 0);
+                const qty = toNum(it.quantity);
 
-                const raw = unit * qty;
-                const itemTotal = Number.isFinite(raw) ? Math.round(raw) : 0;
+                const totalStr = localTotals?.[it.id];
+                const unitStr = localUnits?.[it.id];
+
+                let total_price = 0;
+                let price = 0;
+
+                if (totalStr !== undefined && String(totalStr).trim() !== "") {
+                    total_price = Math.max(0, Math.round(toNum(totalStr)));
+                    price = qty > 0 ? total_price / qty : 0;
+                } else {
+                    price =
+                        unitStr !== undefined && String(unitStr).trim() !== "" ? toNum(unitStr) : toNum(it.price);
+                    total_price = Math.max(0, Math.round(price * qty));
+                }
 
                 return {
                     id: it.id,
                     flower_id: it.flower_id,
-                    price: Number.isFinite(unit) ? unit : 0,
-                    total_price: itemTotal, // integer
+                    price: Number.isFinite(price) ? price : 0,
+                    total_price: Number.isFinite(total_price) ? total_price : 0,
                 };
             });
 
             const total = payloadItems.reduce((s, it) => s + (Number(it.total_price) || 0), 0);
-            // discount + grand total (rounded, non-decimal)
-            const dNum = parseFloat(discount || "0") || 0;
-            const discountRounded = Number.isFinite(dNum) ? Math.round(dNum) : 0;
+            const discountRounded = Math.round(toNum(discount || "0"));
             const grandTotal = Math.max(0, total - discountRounded);
 
             const body = {
@@ -143,18 +441,18 @@ export default function TodayOrders() {
                 grand_total_price: grandTotal,
                 flower_pickup_items: payloadItems,
             };
-            // console.log("Body", body);
-            // return;
 
             const res = await fetch(`${base_url}api/update-flower-prices/${pickup.pick_up_id}`, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${access_token}`, "Content-Type": "application/json" },
                 body: JSON.stringify(body),
             });
+
             if (!res.ok) {
                 const t = await res.text();
                 throw new Error(`POST failed (${res.status}): ${t}`);
             }
+
             Alert.alert("Success", "Prices updated successfully.");
             fetchPickups();
         } catch (e) {
@@ -162,188 +460,6 @@ export default function TodayOrders() {
         } finally {
             setSubmitting(false);
         }
-    };
-
-    const Meta = ({ label, value }) => (
-        <View style={styles.metaChip}>
-            <Text style={styles.metaLabel}>{label}</Text>
-            <Text style={styles.metaVal}>{value || "—"}</Text>
-        </View>
-    );
-
-    const Card = ({ pickup, index }) => {
-        const a = useRef(new Animated.Value(0)).current;
-        useEffect(() => {
-            Animated.timing(a, { toValue: 1, duration: 260, delay: index * 60, useNativeDriver: true }).start();
-        }, [a, index]);
-
-        const [localUnits, setLocalUnits] = useState(() => unitDrafts[pickup.pick_up_id] || {});
-        useEffect(() => {
-            if (!Object.keys(localUnits).length && unitDrafts[pickup.pick_up_id]) {
-                setLocalUnits(unitDrafts[pickup.pick_up_id]);
-            }
-            // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [unitDrafts, pickup.pick_up_id]);
-
-        const computeItemTotal = (it) => {
-            const qty = parseFloat(it.quantity ?? "0") || 0;
-            const unit =
-                localUnits[it.id] !== undefined && localUnits[it.id] !== ""
-                    ? parseFloat(localUnits[it.id])
-                    : parseFloat(it.price ?? "0") || 0;
-
-            const tot = unit * qty;
-            const rounded = Number.isFinite(tot) ? Math.round(tot) : 0;
-            return rounded;
-        };
-
-        const computeCardTotal = () => {
-            const items = pickup.flower_pickup_items || [];
-            return items.reduce((acc, it) => acc + computeItemTotal(it), 0);
-        };
-
-        const [discount, setDiscount] = useState(() =>
-            pickup?.discount !== null && pickup?.discount !== undefined ? String(pickup.discount) : ""
-        );
-
-        // keep it in sync after fetchPickups() reloads the pickup from DB
-        useEffect(() => {
-            setDiscount(pickup?.discount !== null && pickup?.discount !== undefined ? String(pickup.discount) : "");
-        }, [pickup?.pick_up_id, pickup?.discount]);
-
-        const calculatedTotal = computeCardTotal();
-
-        const discountNum = parseFloat(discount || "0") || 0;
-        const discountRounded = Number.isFinite(discountNum) ? Math.round(discountNum) : 0;
-
-        const grandTotal = Math.max(0, calculatedTotal - discountRounded);
-
-
-        return (
-            <Animated.View
-                style={{
-                    opacity: a,
-                    transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
-                }}
-            >
-                <View style={styles.card}>
-                    {/* header */}
-                    <View style={styles.headerRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={styles.vendorName}>{vendorData?.vendor_name || "—"}</Text>
-                            <Text style={styles.metaText}>
-                                Rider: <Text style={styles.metaStrong}>{pickup?.rider?.rider_name || "—"}</Text>
-                            </Text>
-                        </View>
-                        <View style={styles.statusPill}>
-                            <Text style={styles.statusText}>{pickup.status || "—"}</Text>
-                        </View>
-                    </View>
-
-                    {/* chips */}
-                    <View style={styles.chipsRow}>
-                        <Meta label="Pickup" value={formatDT(pickup.pickup_date)} />
-                        {/* <Meta label="Delivery" value={formatDT(pickup.delivery_date)} /> */}
-                        <Meta label="Payment" value={pickup.payment_status || "—"} />
-                    </View>
-
-                    {/* items */}
-                    <View style={styles.itemsWrap}>
-                        {(pickup.flower_pickup_items || []).map((it) => {
-                            const unitVal = localUnits[it.id] ?? "";
-                            const itemTotal = computeItemTotal(it);
-                            return (
-                                <View key={it.id} style={styles.itemCard}>
-                                    {/* row 1: name + qty */}
-                                    <View style={styles.itemTopRow}>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.itemName}>
-                                                {it?.flower?.item_name || it?.flower?.name || it.flower_id}
-                                            </Text>
-                                            <Text style={styles.itemMeta}>
-                                                Qty: {it.quantity} {it?.unit?.unit_name || ""}
-                                            </Text>
-                                        </View>
-                                        <Text style={styles.itemIdText}>#{it.flower_id}</Text>
-                                    </View>
-
-                                    {/* row 2: 2-column (unit input | total) */}
-                                    <View style={styles.itemBottomRow}>
-                                        {/* left: unit input */}
-                                        <View style={[styles.col, { marginRight: 8 }]}>
-                                            <Text style={styles.labelSmall}>Price / Unit (₹)</Text>
-                                            <View style={styles.inputWrap}>
-                                                <View style={styles.prefix}>
-                                                    <Text style={styles.prefixText}>₹</Text>
-                                                </View>
-                                                <TextInput
-                                                    style={styles.input}
-                                                    value={unitVal}
-                                                    placeholder="0.00"
-                                                    placeholderTextColor="#94A3B8"
-                                                    keyboardType="decimal-pad"
-                                                    blurOnSubmit={false}
-                                                    onChangeText={(txt) => setLocalUnits((prev) => ({ ...prev, [it.id]: txt }))}
-                                                />
-                                            </View>
-                                        </View>
-
-                                        {/* right: total */}
-                                        <View style={[styles.col, { alignItems: "flex-end", marginLeft: 8 }]}>
-                                            <Text style={styles.labelSmall}>Item Total</Text>
-                                            <Text style={styles.priceValue}>{formatCurrency(itemTotal)}</Text>
-                                        </View>
-                                    </View>
-                                </View>
-                            );
-                        })}
-                    </View>
-
-                    {/* footer total + action */}
-                    <View style={styles.totalRow}>
-                        <Text style={styles.totalLabel}>Calculated Total</Text>
-                        <Text style={styles.totalValue}>{formatCurrency(calculatedTotal)}</Text>
-                    </View>
-
-                    {/* Discount row */}
-                    <View style={styles.discountRow}>
-                        <Text style={styles.totalLabel}>Discount</Text>
-
-                        <View style={[styles.inputWrap, { width: 160 }]}>
-                            <View style={styles.prefix}>
-                                <Text style={styles.prefixText}>₹</Text>
-                            </View>
-                            <TextInput
-                                style={styles.input}
-                                value={discount}
-                                placeholder="0"
-                                placeholderTextColor="#94A3B8"
-                                keyboardType="number-pad"
-                                onChangeText={setDiscount}
-                            />
-                        </View>
-                    </View>
-
-                    {/* Grand Total row */}
-                    <View style={styles.grandRow}>
-                        <Text style={styles.totalLabel}>Grand Total</Text>
-                        <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
-                    </View>
-
-                    <Pressable
-                        onPress={() => submitPrices(pickup, localUnits, discount)}
-                        disabled={submitting}
-                        style={({ pressed }) => [
-                            styles.primaryBtn,
-                            pressed && { transform: [{ scale: 0.995 }] },
-                            submitting && { opacity: 0.6 },
-                        ]}
-                    >
-                        <Text style={styles.primaryBtnText}>{submitting ? "Submitting..." : "Update Flower Prices"}</Text>
-                    </Pressable>
-                </View>
-            </Animated.View>
-        );
     };
 
     return (
@@ -367,7 +483,19 @@ export default function TodayOrders() {
                             data={todaysPickups}
                             keyExtractor={(p) => String(p.id)}
                             showsVerticalScrollIndicator={false}
-                            renderItem={({ item, index }) => <Card pickup={item} index={index} />}
+                            renderItem={({ item, index }) => (
+                                <Card
+                                    pickup={item}
+                                    index={index}
+                                    vendorData={vendorData}
+                                    submitting={submitting}
+                                    formatDT={formatDT}
+                                    formatCurrency={formatCurrency}
+                                    submitPrices={submitPrices}
+                                    getDraft={getDraft}
+                                    setDraft={setDraft}
+                                />
+                            )}
                             ListEmptyComponent={
                                 <View style={styles.center}>
                                     <Text style={styles.subtle}>No pickups for today.</Text>
@@ -375,7 +503,7 @@ export default function TodayOrders() {
                             }
                             refreshControl={<RefreshControl refreshing={loading} onRefresh={fetchPickups} />}
                             contentContainerStyle={{ paddingBottom: 24 }}
-                            keyboardShouldPersistTaps="always"
+                            keyboardShouldPersistTaps="handled"
                             removeClippedSubviews={false}
                         />
                     )}
@@ -391,7 +519,6 @@ const styles = StyleSheet.create({
     center: { paddingVertical: 40, alignItems: "center" },
     subtle: { color: COLORS.sub },
 
-    /* Card */
     card: {
         backgroundColor: COLORS.card,
         borderRadius: 16,
@@ -406,7 +533,6 @@ const styles = StyleSheet.create({
         elevation: 2,
     },
 
-    /* Header */
     headerRow: { flexDirection: "row", alignItems: "center" },
     vendorName: { color: COLORS.text, fontWeight: "900", fontSize: 18 },
     metaText: { color: COLORS.sub, marginTop: 2 },
@@ -422,7 +548,6 @@ const styles = StyleSheet.create({
     },
     statusText: { color: COLORS.chipText, fontWeight: "700", fontSize: 12 },
 
-    /* Meta chips row */
     chipsRow: {
         flexDirection: "row",
         flexWrap: "wrap",
@@ -440,9 +565,6 @@ const styles = StyleSheet.create({
     metaLabel: { color: COLORS.sub, fontSize: 12 },
     metaVal: { color: COLORS.text, fontWeight: "800", marginTop: 2 },
 
-    divider: { height: 1, backgroundColor: COLORS.border, marginVertical: 12 },
-
-    /* Items */
     itemsWrap: { marginTop: 12 },
     itemCard: {
         backgroundColor: COLORS.mutedCard,
@@ -457,12 +579,8 @@ const styles = StyleSheet.create({
     itemMeta: { color: COLORS.text, opacity: 0.8, marginTop: 2 },
     itemIdText: { color: COLORS.sub, fontSize: 12, marginLeft: 8 },
 
-    itemBottomRow: {
-        flexDirection: "row",
-        alignItems: "flex-end",
-        marginTop: 10,
-    },
-    col: { flex: 1 },
+    fieldRow: { flexDirection: "row", alignItems: "flex-start", marginTop: 10 },
+    fieldCol: { flex: 1, paddingHorizontal: 4 },
 
     labelSmall: { color: COLORS.sub, fontSize: 12, marginBottom: 4 },
     inputWrap: {
@@ -474,6 +592,7 @@ const styles = StyleSheet.create({
         borderRadius: 12,
         paddingHorizontal: 10,
         paddingVertical: 8,
+        minHeight: 48,
         elevation: 1,
     },
     prefix: {
@@ -495,9 +614,6 @@ const styles = StyleSheet.create({
         textAlign: "right",
     },
 
-    priceValue: { color: COLORS.text, fontWeight: "900", fontSize: 16, marginTop: 2 },
-
-    /* Footer */
     totalRow: {
         borderTopWidth: 1,
         borderTopColor: COLORS.border,
