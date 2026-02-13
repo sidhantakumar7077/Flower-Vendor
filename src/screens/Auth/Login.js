@@ -163,10 +163,10 @@ export default function Login() {
 
         try {
             setLoading(true);
-            const res = await fetch(`${base_url}api/vendor-password-login`, {
+            const res = await fetch(`${base_url}api/vendor-email-password`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email_id: email, password }),
+                body: JSON.stringify({ email: email, password }),
             });
             const data = await res.json();
             if (data.success) {
@@ -205,6 +205,7 @@ export default function Login() {
                 setOtpSent(true);
                 setTimer(45);
                 setMessage({ type: 'success', text: data.message || 'OTP sent successfully.' });
+                console.log("OTP sent successfully:", data);
             } else {
                 setMessage({ type: 'error', text: data.message || 'Failed to send OTP.' });
             }
@@ -234,8 +235,8 @@ export default function Login() {
                 await AsyncStorage.setItem('storeAccesstoken', data.token);
                 // Navigate to Dashboard or Home screen
                 navigation.replace('Home');
-                // console.log('✅ Vendor:', data.vendor);
-                // console.log('🔑 Token:', data.token);
+                console.log('✅ Vendor:', data.vendor);
+                console.log('🔑 Token:', data.token);
             } else {
                 setMessage({ type: 'error', text: data.message || 'OTP verification failed.' });
             }
